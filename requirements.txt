@@ -1,0 +1,7 @@
+streamlit==1.66.1
+SQLAlchemy>=2.0,<2.2
+PyMySQL>=1.1
+cryptography>=42
+pandas>=2.2
+plotly>=5.24
+python-dotenv>=1.0
