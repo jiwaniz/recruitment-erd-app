@@ -1,0 +1,1 @@
+aiosmtpd>=1.4   # only for tests/test_auth.py (local fake email server)

@@ -239,3 +239,56 @@ def candidate_profile(candidate_id: int) -> dict:
 def job_skills(job_id: int) -> pd.DataFrame:
     return q("""SELECT s.skill_name AS skill, js.is_mandatory FROM job_skill js JOIN skill s ON s.skill_id = js.skill_id
                 WHERE js.job_id = :j ORDER BY js.is_mandatory DESC, s.skill_name""", j=job_id)
+
+
+# ---------------------------------------------------------------- dashboard / shell data
+def dash_applications() -> pd.DataFrame:
+    """One row per application with everything the dashboard filters and KPIs need."""
+    df = q("""
+        SELECT a.application_id, a.candidate_id, c.candidate_name, a.date_applied, a.status,
+               j.job_id, j.job_title, d.department_id, d.department_name, s.source_id, s.source_name,
+               (SELECT MIN(h.changed_date) FROM application_status_history h
+                 WHERE h.application_id = a.application_id AND h.new_status = 'Hired') AS hired_on,
+               (SELECT o.status FROM job_offer o WHERE o.application_id = a.application_id ORDER BY o.offer_id DESC LIMIT 1) AS offer_status
+        FROM application a
+        JOIN candidate c ON c.candidate_id = a.candidate_id
+        JOIN job_posting p ON p.posting_id = a.posting_id
+        JOIN job j ON j.job_id = p.job_id
+        JOIN department d ON d.department_id = j.department_id
+        JOIN source s ON s.source_id = p.source_id""")
+    df["date_applied"] = pd.to_datetime(df["date_applied"])
+    df["hired_on"] = pd.to_datetime(df["hired_on"])
+    return df
+
+
+def dash_history() -> pd.DataFrame:
+    return q("SELECT DISTINCT application_id, new_status FROM application_status_history")
+
+
+def dash_evaluations() -> pd.DataFrame:
+    return q("""SELECT i.application_id, i.interview_id, i.round_type, ev.recommendation, ev.rating
+                FROM interview_evaluation ev JOIN interview i ON i.interview_id = ev.interview_id""")
+
+
+def recent_activity(limit: int = 12) -> pd.DataFrame:
+    return q(f"""
+        SELECT h.changed_date AS when_, c.candidate_name AS candidate, j.job_title AS vacancy,
+               CONCAT(COALESCE(h.old_status, 'New'), ' > ', h.new_status) AS change_, e.employee_name AS by_
+        FROM application_status_history h
+        JOIN application a ON a.application_id = h.application_id
+        JOIN candidate c ON c.candidate_id = a.candidate_id
+        JOIN job_posting p ON p.posting_id = a.posting_id JOIN job j ON j.job_id = p.job_id
+        LEFT JOIN employee e ON e.employee_id = h.employee_id
+        ORDER BY h.log_id DESC LIMIT {int(limit)}""").rename(columns={"when_": "when", "change_": "change", "by_": "by"})
+
+
+def notifications() -> dict:
+    r = q("""
+        SELECT (SELECT COUNT(*) FROM requisition_approval WHERE decision = 'Pending') AS req_approvals,
+               (SELECT COUNT(*) FROM offer_approval WHERE decision = 'Pending') AS offer_approvals,
+               (SELECT COUNT(*) FROM job_offer WHERE status = 'Sent') AS offers_waiting,
+               (SELECT COUNT(*) FROM interview WHERE interview_date >= NOW() AND interview_date < NOW() + INTERVAL 7 DAY) AS interviews_soon,
+               (SELECT COUNT(*) FROM interview i WHERE i.interview_date < NOW() AND
+                  (SELECT COUNT(*) FROM interview_evaluation ev WHERE ev.interview_id = i.interview_id) <
+                  (SELECT COUNT(*) FROM interview_participant ip WHERE ip.interview_id = i.interview_id)) AS feedback_due""")
+    return {k: int(v) for k, v in r.iloc[0].items()}

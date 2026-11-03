@@ -61,6 +61,13 @@ Users live in `.env` (`APP_USERS`, one line of JSON) locally or in `[users.*]` s
 There is no public registration. The database has no user table, so no schema change was made.
 `employee_id` is optional; when set, that employee is recorded as the person who made status changes.
 
+## Look and feel
+One design system in `app_core/ui.py` (colours, typography, KPI cards, status badges, tables, form buttons, charts). The theme colours are also set in `.streamlit/config.toml`.
+To change the look of the whole app, edit that one file.
+
+## Accounts and passwords
+See `AUTH_SETUP.md` (proposed `database/migrations/001_auth_tables.sql`, email setup) and `TEST_REPORT.md`.
+
 ## Safety rules the code follows
 * No table is dropped, truncated or renamed by the application. The app account only needs SELECT, INSERT, UPDATE, DELETE.
 * Every query with user input uses bound parameters (SQL injection safe).

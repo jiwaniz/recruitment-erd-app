@@ -1,137 +1,204 @@
+from datetime import date, timedelta
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from app_core import db, ui
+from app_core import analytics as A, db, queries as Q, ui
 
-ui.page_header("Dashboard", "Live recruitment KPIs calculated from the database")
+ui.page_header("Dashboard", "Recruitment analytics command centre. Every figure is calculated from live database records.")
 ui.show_flash()
 
-k = db.q("""
-    SELECT (SELECT COUNT(*) FROM candidate) AS candidates,
-           (SELECT COUNT(*) FROM job) AS vacancies,
-           (SELECT COUNT(DISTINCT job_id) FROM job_posting WHERE status = 'Active') AS open_vacancies,
-           (SELECT COUNT(*) FROM application) AS applications,
-           (SELECT COUNT(*) FROM interview) AS interviews,
-           (SELECT COUNT(*) FROM application WHERE status = 'Hired') AS hires,
-           (SELECT COUNT(*) FROM job_offer) AS offers,
-           (SELECT COUNT(*) FROM job_offer WHERE status = 'Accepted') AS accepted,
-           (SELECT COUNT(*) FROM job_offer WHERE status IN ('Accepted','Declined')) AS answered,
-           (SELECT COUNT(*) FROM requisition_request WHERE status = 'PendingApproval') AS pending_req,
-           (SELECT COUNT(*) FROM interview WHERE interview_date >= NOW() AND interview_date < NOW() + INTERVAL 7 DAY) AS upcoming,
-           (SELECT COALESCE(SUM(r.requested_headcount), 0) FROM requisition_request r WHERE r.status = 'Approved') AS seats
-""").iloc[0]
+apps_all, hist, evs = Q.dash_applications(), Q.dash_history(), Q.dash_evaluations()
+ivs, vac, reqs = Q.interviews(), Q.vacancies(), Q.requisitions()
+total_candidates = int(db.scalar("SELECT COUNT(*) AS n FROM candidate") or 0)
 
-if int(k["candidates"]) == 0 and int(k["applications"]) == 0:
-    st.info("The database has no recruitment records yet. Add candidates and applications to see statistics here.")
+if apps_all.empty:
+    ui.empty_state("No recruitment data yet", "Add candidates and applications to see analytics here.")
+    st.stop()
 
-ui.metrics([("Candidates", f"{int(k['candidates']):,}"), ("Vacancies", f"{int(k['vacancies']):,}",
-            "Jobs created from approved requisitions"), ("Applications", f"{int(k['applications']):,}"),
-            ("Interviews", f"{int(k['interviews']):,}"), ("Hires", f"{int(k['hires']):,}")])
+# ------------------------------------------------------------------ filters
+with st.container(border=True):
+    st.caption("Filters apply to every figure and chart on this page.")
+    c1, c2, c3, c4, c5 = st.columns([1.2, 1.5, 1.6, 1.4, 1.4])
+    period = c1.selectbox("Period (by application date)", ["All time", "Last 30 days", "Last 90 days", "Custom range"], key="d_period")
+    depts = c2.multiselect("Department", sorted(apps_all["department_name"].unique()), key="d_dept")
+    vmap = {int(r.job_id): f"#{r.job_id} {r.job_title}" for r in vac.itertuples()} if not vac.empty else {}
+    jobs = c3.multiselect("Vacancy", list(vmap), format_func=vmap.get, key="d_job")
+    stats = c4.multiselect("Recruitment status", A.STAGES + ["Rejected", "Withdrawn"], key="d_status")
+    srcs = c5.multiselect("Source", sorted(apps_all["source_name"].unique()), key="d_src")
+    start = end = None
+    unit = "period"
+    today = date.today()
+    if period == "Last 30 days":
+        start, end, unit = today - timedelta(days=29), today, "30 days"
+    elif period == "Last 90 days":
+        start, end, unit = today - timedelta(days=89), today, "90 days"
+    elif period == "Custom range":
+        d1, d2 = st.columns(2)
+        start = d1.date_input("From", value=apps_all["date_applied"].min().date(), key="d_from")
+        end = d2.date_input("To", value=today, key="d_to")
+        if start > end:
+            st.error("The start date must not be after the end date.")
+            st.stop()
+f = A.Filters(start, end, depts, jobs, stats, srcs)
+apps = A.apply(apps_all, f)
+k = A.kpis(apps_all, ivs, vac, reqs, total_candidates, f, unit)
+if apps.empty:
+    ui.empty_state("No applications match these filters", "Widen the period or clear some filters.")
 
-tth = db.scalar("""SELECT AVG(DATEDIFF(h.changed_date, a.date_applied)) FROM application a
-                   JOIN application_status_history h ON h.application_id = a.application_id AND h.new_status = 'Hired'
-                   WHERE a.status = 'Hired'""")
-rate = (k["accepted"] / k["answered"] * 100) if k["answered"] else None
-ui.metrics([("Open vacancies", f"{int(k['open_vacancies'])}", "Vacancies with at least one Active posting"),
-            ("Offer acceptance", f"{rate:.0f}%" if rate is not None else "n/a", "Accepted / (Accepted + Declined)"),
-            ("Avg. time to hire", f"{float(tth):.0f} days" if tth is not None and pd.notna(tth) else "n/a",
-             "Application date to hire date"),
-            ("Requisitions awaiting approval", f"{int(k['pending_req'])}"),
-            ("Interviews in next 7 days", f"{int(k['upcoming'])}")])
 
+def card(icon, label, key, fmt="{:,}", help="", sub=""):
+    v = k[key]
+    t = k["trends"].get(key)
+    return dict(icon=icon, label=label, value=fmt.format(v) if v is not None else "n/a", help=help, sub=sub,
+                delta=t[0] if t else "", good=t[1] if t else True)
+
+
+ui.kpi_row([
+    card("👥", "Total Candidates", "candidates", help="Candidates with applications that match the filters (all candidates when no filter is set)"),
+    card("💼", "Total Vacancies", "vacancies", help="Vacancies matching the department / vacancy filters"),
+    card("📄", "Total Applications", "applications", help="Counted by application date"),
+    card("🗓️", "Total Interviews", "interviews", help="Interviews of the applications that match the filters"),
+    card("✅", "Total Hires", "hires", help="Applications in status Hired"),
+    card("🟢", "Open Vacancies", "open_vacancies", help="Vacancies with an Active posting that are not yet filled"),
+    card("🤝", "Offer Acceptance", "offer_acceptance", "{:.0f}%", "Accepted / (Accepted + Declined)", "of answered offers"),
+    card("⏱️", "Avg. Time to Hire", "time_to_hire", "{:.0f} days", "Application date to hire date", "applied to hired"),
+    card("📝", "Pending Requisition Approvals", "pending_requisitions", help="Requisitions waiting for approval"),
+    card("📅", "Upcoming Interviews", "upcoming_interviews", help="Interviews in the next 7 days", sub="next 7 days"),
+])
+if f.active and period in ("Last 30 days", "Last 90 days", "Custom range"):
+    st.caption("Trend arrows compare with the previous period of the same length and appear only when that period has data.")
+
+# ------------------------------------------------------------------ analytics
 st.divider()
-left, right = st.columns(2)
-
-with left:
-    st.subheader("Recruitment pipeline (candidates who reached each stage)")
-    stages = ["Applied", "Screening", "Interviewing", "Assessment", "BackgroundCheck", "Offered", "Hired"]
-    reached = db.q("""SELECT new_status AS stage, COUNT(DISTINCT application_id) AS applications
-                      FROM application_status_history GROUP BY new_status""")
-    if reached.empty:
-        st.info("No pipeline data yet.")
+ui.section("Pipeline and status")
+l, r = st.columns(2)
+with l:
+    st.markdown("**Recruitment pipeline** (candidates who reached each stage)")
+    pl = A.pipeline(apps, hist)
+    if pl["applications"].sum() == 0:
+        ui.empty_state("No pipeline data")
     else:
-        funnel = pd.DataFrame({"stage": stages}).merge(reached, on="stage", how="left").fillna(0)
-        fig = px.funnel(funnel, x="applications", y="stage", color_discrete_sequence=[ui.PRIMARY])
-        fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=360)
-        st.plotly_chart(fig, width="stretch")
-
-with right:
-    st.subheader("Application status distribution (today)")
-    dist = db.q("SELECT status, COUNT(*) AS applications FROM application GROUP BY status ORDER BY applications DESC")
+        ui.chart(px.funnel(pl, x="applications", y="stage", color_discrete_sequence=[ui.PRIMARY]), 340)
+with r:
+    st.markdown("**Application status distribution**")
+    dist = apps.groupby("status").size().reset_index(name="applications")
     if dist.empty:
-        st.info("No applications yet.")
+        ui.empty_state("No applications")
     else:
-        fig = px.pie(dist, names="status", values="applications", hole=0.5, color="status",
-                     color_discrete_map=ui.STATUS_COLORS)
-        fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=360)
-        st.plotly_chart(fig, width="stretch")
+        ui.chart(px.pie(dist, names="status", values="applications", hole=0.55, color="status", color_discrete_map=ui.STATUS_COLORS), 340)
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.subheader("Requisition status")
-    d = db.q("SELECT status, COUNT(*) AS requisitions FROM requisition_request GROUP BY status")
-    if d.empty:
-        st.info("No requisitions yet.")
+ui.section("Trends and volumes")
+l, r = st.columns(2)
+with l:
+    st.markdown("**Monthly recruitment trends**")
+    m = A.monthly(apps, ivs)
+    if m.empty:
+        ui.empty_state("No monthly data")
     else:
-        fig = px.bar(d, x="status", y="requisitions", color="status", color_discrete_map=ui.STATUS_COLORS)
-        fig.update_layout(showlegend=False, margin=dict(l=0, r=0, t=10, b=0), height=300)
-        st.plotly_chart(fig, width="stretch")
-with c2:
-    st.subheader("Posting status")
-    d = db.q("SELECT status, COUNT(*) AS postings FROM job_posting GROUP BY status")
+        mm = m.melt("month", var_name="measure", value_name="count")
+        ui.chart(px.line(mm, x="month", y="count", color="measure", markers=True), 320)
+with r:
+    st.markdown("**Applications by department**")
+    d = apps.groupby("department_name").size().reset_index(name="applications").sort_values("applications")
     if d.empty:
-        st.info("No postings yet.")
+        ui.empty_state("No applications")
     else:
-        fig = px.bar(d, x="status", y="postings", color="status", color_discrete_map=ui.STATUS_COLORS)
-        fig.update_layout(showlegend=False, margin=dict(l=0, r=0, t=10, b=0), height=300)
-        st.plotly_chart(fig, width="stretch")
-with c3:
-    st.subheader("Applications by source")
-    d = db.q("""SELECT s.source_name, COUNT(*) AS applications FROM application a
-                JOIN job_posting p ON p.posting_id = a.posting_id JOIN source s ON s.source_id = p.source_id
-                GROUP BY s.source_name ORDER BY applications DESC""")
-    if d.empty:
-        st.info("No applications yet.")
-    else:
-        fig = px.bar(d, x="applications", y="source_name", orientation="h", color_discrete_sequence=[ui.COLORS[1]])
-        fig.update_layout(yaxis=dict(autorange="reversed", title=""), margin=dict(l=0, r=0, t=10, b=0), height=300)
-        st.plotly_chart(fig, width="stretch")
+        ui.chart(px.bar(d, x="applications", y="department_name", orientation="h", color_discrete_sequence=[ui.BLUE]), 320)
 
-c4, c5 = st.columns(2)
-with c4:
-    st.subheader("Applications by department")
-    d = db.q("""SELECT d.department_name, COUNT(*) AS applications FROM application a
-                JOIN job_posting p ON p.posting_id = a.posting_id JOIN job j ON j.job_id = p.job_id
-                JOIN department d ON d.department_id = j.department_id GROUP BY d.department_name ORDER BY applications DESC""")
-    if d.empty:
-        st.info("No applications yet.")
+l, r = st.columns(2)
+with l:
+    st.markdown("**Vacancies by status**")
+    vv = vac
+    if depts:
+        vv = vv[vv["department_name"].isin(depts)]
+    if jobs:
+        vv = vv[vv["job_id"].isin(jobs)]
+    vs = vv.groupby("vacancy_status").size().reset_index(name="vacancies") if not vv.empty else vv
+    if vs.empty:
+        ui.empty_state("No vacancies")
     else:
-        fig = px.bar(d, x="department_name", y="applications", color_discrete_sequence=[ui.PRIMARY])
-        fig.update_layout(xaxis_title="", margin=dict(l=0, r=0, t=10, b=0), height=320)
-        st.plotly_chart(fig, width="stretch")
-with c5:
-    st.subheader("Interviews by round and average rating")
-    d = db.q("""SELECT i.round_type AS round, COUNT(DISTINCT i.interview_id) AS interviews,
-                       ROUND(AVG(ev.rating), 2) AS avg_rating
-                FROM interview i LEFT JOIN interview_evaluation ev ON ev.interview_id = i.interview_id
-                GROUP BY i.round_type""")
-    if d.empty:
-        st.info("No interviews yet.")
+        ui.chart(px.bar(vs, x="vacancy_status", y="vacancies", color="vacancy_status", color_discrete_map=ui.STATUS_COLORS), 300)
+with r:
+    st.markdown("**Recruitment source analysis**")
+    bs = A.by_source(apps)
+    if bs.empty:
+        ui.empty_state("No source data")
     else:
-        d["round"] = pd.Categorical(d["round"], ["HR", "Technical", "Managerial", "Final"], ordered=True)
-        d = d.sort_values("round")
-        fig = px.bar(d, x="round", y="interviews", text="avg_rating", color_discrete_sequence=[ui.COLORS[2]])
-        fig.update_traces(texttemplate="avg %{text}", textposition="outside")
-        fig.update_layout(xaxis_title="", margin=dict(l=0, r=0, t=20, b=0), height=320)
-        st.plotly_chart(fig, width="stretch")
+        fig = px.bar(bs.melt("source_name", ["applications", "hires"], "measure", "count"), x="source_name", y="count",
+                     color="measure", barmode="group", color_discrete_sequence=[ui.PRIMARY, ui.GREEN])
+        ui.chart(fig, 300)
+        st.caption("Conversion (hires / applications): " + ", ".join(f"{r_.source_name} {r_.conversion_pct:.0f}%" for r_ in bs.itertuples()))
 
-st.subheader("Open positions by vacancy")
-from app_core import queries as Q          # noqa: E402
-v = Q.vacancies()
-if v.empty:
-    st.info("No vacancies yet.")
+l, r, r2 = st.columns(3)
+with l:
+    st.markdown("**Interview outcomes**")
+    e = evs[evs["application_id"].isin(apps["application_id"])]
+    if e.empty:
+        ui.empty_state("No interview feedback yet")
+    else:
+        order = ["StrongHire", "Hire", "NoHire", "StrongNoHire"]
+        o = e.groupby("recommendation").size().reindex(order, fill_value=0).reset_index(name="evaluations")
+        ui.chart(px.bar(o, x="recommendation", y="evaluations", color="recommendation",
+                        color_discrete_map={"StrongHire": ui.GREEN, "Hire": "#65A30D", "NoHire": ui.AMBER, "StrongNoHire": ui.RED}), 300)
+with r:
+    st.markdown("**Offer-to-hire conversion**")
+    of = A.offer_funnel(apps)
+    if of["count"].iloc[0] == 0:
+        ui.empty_state("No offers yet")
+    else:
+        ui.chart(px.funnel(of, x="count", y="step", color_discrete_sequence=[ui.COLORS[3]]), 300)
+with r2:
+    st.markdown("**Time-to-hire analysis**")
+    h = apps[(apps["status"] == "Hired") & apps["hired_on"].notna()]
+    if h.empty:
+        ui.empty_state("No hires in this selection")
+    else:
+        days = (h["hired_on"].dt.normalize() - h["date_applied"]).dt.days.rename("days to hire")
+        ui.chart(px.histogram(days, x="days to hire", nbins=8, color_discrete_sequence=[ui.COLORS[4]]), 300)
+
+# ------------------------------------------------------------------ operational sections
+st.divider()
+ui.section("What needs attention")
+l, r = st.columns(2)
+with l:
+    st.markdown("**Upcoming interviews**")
+    up = A.interviews_for(ivs, apps)
+    up = up[up["interview_date"] >= pd.Timestamp.now()].sort_values("interview_date").head(8)
+    if not up.empty:
+        ui.small_table(up[["candidate_name", "job_title", "round_type", "interview_date", "mode"]])
+    else:
+        ui.empty_state("No upcoming interviews")
+with r:
+    st.markdown("**Recent applications**")
+    ra = apps.sort_values("date_applied", ascending=False).head(8)
+    if not ra.empty:
+        ui.small_table(ra[["candidate_name", "job_title", "department_name", "date_applied", "status"]])
+    else:
+        ui.empty_state("No applications")
+l, r = st.columns(2)
+with l:
+    st.markdown("**Pending offers**")
+    of_df = Q.offers()
+    po = of_df[of_df["status"].isin(["PendingApproval", "Sent"]) & of_df["application_id"].isin(apps["application_id"])]
+    if not po.empty:
+        ui.small_table(po[["candidate_name", "job_title", "salary_offered", "status"]])
+    else:
+        ui.empty_state("No pending offers")
+with r:
+    st.markdown("**Requisitions requiring attention**")
+    rq = reqs
+    if depts:
+        rq = rq[rq["department_name"].isin(depts)]
+    rq = rq[(rq["status"] == "PendingApproval") | ((rq["status"] == "Approved") & (pd.to_datetime(rq["hiring_deadline"]) < pd.Timestamp.now()))]
+    if not rq.empty:
+        ui.small_table(rq[["job_title", "department_name", "headcount", "status", "hiring_deadline"]])
+    else:
+        ui.empty_state("Nothing needs attention")
+st.markdown("**Recent recruitment activities** (latest status changes across all applications)")
+ra2 = Q.recent_activity(10)
+if not ra2.empty:
+    ui.small_table(ra2)
 else:
-    open_v = v[v["open_positions"] > 0][["job_id", "job_title", "department_name", "headcount", "hires", "open_positions",
-                                          "applications", "vacancy_status"]]
-    ui.show_table(open_v, key="dash_open")
+    ui.empty_state("No activity yet")

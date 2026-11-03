@@ -5,6 +5,16 @@ import streamlit as st
 
 from app_core import auth, queries as Q, services as S, ui
 
+def _open_vac(row):
+    st.session_state["v_detail"] = int(row["job_id"])
+    ui.notify("success", f"{row['job_title']}: scroll down to 'Vacancy details'.")
+
+
+def _edit_vac(row):
+    st.session_state["edit_job"] = int(row["job_id"])
+    ui.notify("success", f"{row['job_title']}: open the 'Edit vacancy' tab.")
+
+
 ui.page_header("Recruitment / Vacancies", "Requisitions, vacancies (jobs) and job postings")
 ui.show_flash()
 can_edit, is_admin = auth.has_role("recruiter"), auth.has_role("admin")
@@ -33,7 +43,8 @@ with t_list:
             df = df[df["location"].isin(loc)]
         show = df[["job_id", "job_title", "department_name", "location", "employment_type", "headcount", "hires",
                    "open_positions", "applications", "active_postings", "vacancy_status", "requisition_id"]]
-        ui.show_table(show, "vacancies.csv", key="dl_vac")
+        ui.show_table(show, "vacancies.csv", key="vac", label_col="job_title",
+                      actions=[("Show details", _open_vac), ("Edit vacancy", _edit_vac)])
         if not df.empty:
             st.markdown("#### Vacancy details")
             labels = {int(r.job_id): f"#{r.job_id} - {r.job_title} ({r.department_name})" for r in df.itertuples()}
@@ -43,7 +54,7 @@ with t_list:
                         ("Open positions", int(row["open_positions"])), ("Applications", int(row["applications"])),
                         ("Status", row["vacancy_status"])])
             st.write(f"**Salary range:** {ui.pkr(row['salary_range_min'])} - {ui.pkr(row['salary_range_max'])}  |  "
-                     f"**Hiring deadline:** {row['hiring_deadline']}  |  **Requisition:** #{row['requisition_id']} "
+                     f"**Hiring deadline:** {ui.val(row['hiring_deadline'], '-')}  |  **Requisition:** #{row['requisition_id']} "
                      f"({row['requisition_status']})")
             d1, d2 = st.columns(2)
             with d1:
@@ -53,12 +64,12 @@ with t_list:
                     st.caption("No skills recorded.")
                 else:
                     js["is_mandatory"] = js["is_mandatory"].map({1: "Required", 0: "Preferred", True: "Required", False: "Preferred"})
-                    st.dataframe(js, hide_index=True, width="stretch")
+                    ui.small_table(js)
             with d2:
                 st.markdown("**Postings**")
                 pp = Q.postings()
                 pp = pp[pp["job_id"] == jid]
-                st.dataframe(pp.drop(columns=["job_id", "job_title"]), hide_index=True, width="stretch")
+                ui.small_table(pp.drop(columns=["job_id", "job_title"]))
             apps = Q.applications()
             apps = apps[apps["job_id"] == jid]
             if not apps.empty:
@@ -88,7 +99,7 @@ with t_add:
                 low = c1.number_input("Minimum salary (PKR)", min_value=0, step=5000, value=60000)
                 high = c2.number_input("Maximum salary (PKR)", min_value=0, step=5000, value=90000)
                 desc = st.text_area("Description")
-                if st.form_submit_button("Create vacancy", type="primary"):
+                if ui.submit("Create vacancy"):
                     default_title = approved[approved["requisition_id"] == rid].iloc[0]["job_title"]
                     S.call(S.create_job, rid, loc, et, title or default_title, desc, low, high)
                     st.rerun()
@@ -112,10 +123,10 @@ with t_edit:
             et = st.selectbox("Employment type", [x[0] for x in ets], format_func=dict(ets).get,
                               index=[x[0] for x in ets].index(int(j["employment_type_id"])))
             c1, c2 = st.columns(2)
-            low = c1.number_input("Minimum salary (PKR)", min_value=0, step=5000, value=int(j["salary_range_min"] or 0))
-            high = c2.number_input("Maximum salary (PKR)", min_value=0, step=5000, value=int(j["salary_range_max"] or 0))
-            desc = st.text_area("Description", value=j["description"] or "")
-            if st.form_submit_button("Save changes", type="primary"):
+            low = c1.number_input("Minimum salary (PKR)", min_value=0, step=5000, value=int(ui.val(j["salary_range_min"], 0)))
+            high = c2.number_input("Maximum salary (PKR)", min_value=0, step=5000, value=int(ui.val(j["salary_range_max"], 0)))
+            desc = st.text_area("Description", value=ui.val(j["description"]))
+            if ui.submit("Save changes"):
                 S.call(S.update_job, int(jid), loc, et, title, desc, low, high)
                 st.rerun()
         st.markdown("#### Skills for this vacancy")
@@ -155,7 +166,7 @@ with t_post:
                 c1, c2 = st.columns(2)
                 pub = c1.date_input("Publish date", value=date.today())
                 close = c2.date_input("Close date", value=date.today() + timedelta(days=30))
-                if st.form_submit_button("Publish posting", type="primary"):
+                if ui.submit("Publish posting"):
                     S.call(S.create_posting, int(jid), src, pub, close)
                     st.rerun()
         st.markdown("#### Change a posting's status")
@@ -165,7 +176,7 @@ with t_post:
                 pid = st.selectbox("Posting", list(pm), format_func=pm.get)
                 new = st.selectbox("New status", ["Active", "Closed", "Expired"])
                 close = st.date_input("Close date", value=date.today())
-                if st.form_submit_button("Update posting"):
+                if ui.submit("Update posting"):
                     S.call(S.set_posting_status, int(pid), new, close)
                     st.rerun()
 
@@ -189,7 +200,7 @@ with t_req:
             submit = st.checkbox("Submit for approval now (otherwise save as draft)", value=True)
             a1 = ui.select_pair("Level 1 approver", approvers, "rq_a1")
             a2 = ui.select_pair("Level 2 approver (optional)", approvers, "rq_a2", allow_none=True, none_label="- none -")
-            if st.form_submit_button("Save requisition", type="primary"):
+            if ui.submit("Save requisition"):
                 chosen = [a for a in (a1, a2) if a]
                 S.call(S.create_requisition, dept, raiser, title, int(heads), reason, deadline, submit, chosen)
                 st.rerun()
@@ -200,13 +211,13 @@ with t_req:
         if pend.empty:
             st.info("No requisition approvals are pending.")
         else:
-            st.dataframe(pend, hide_index=True, width="stretch")
+            ui.small_table(pend)
             with st.form("decide_req"):
                 am = {int(r.approval_id): f"Approval #{r.approval_id} - requisition #{r.requisition_id} {r.job_title} (level {r.approval_level}, {r.approver})" for r in pend.itertuples()}
                 aid = st.selectbox("Approval", list(am), format_func=am.get)
                 dec = st.radio("Decision", ["Approved", "Rejected"], horizontal=True)
                 com = st.text_input("Comments")
-                if st.form_submit_button("Record decision", type="primary"):
+                if ui.submit("Record decision"):
                     S.call(S.decide_requisition_approval, int(aid), dec, com)
                     st.rerun()
         st.markdown("#### Close a filled requisition")

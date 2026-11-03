@@ -17,6 +17,35 @@ Your laptop (local MySQL)  --->  same code  <---  GitHub repo  --->  Streamlit C
 ```
 Your local database is never exposed to the internet. The cloud app talks only to the cloud database.
 
+## 0. Do you need a cloud database at all?
+
+Only if you want a **public URL**. Streamlit Community Cloud runs your app on Streamlit's own servers. Those servers cannot
+reach `localhost` on your laptop, and you should never open your laptop's MySQL port to the internet. So a public version
+needs a database that is also online. Your options:
+
+| Goal | What to use | Needs a cloud database? |
+|---|---|---|
+| Show the supervisor in person or on a screen-share | Run the app locally (`streamlit run app.py`) | No |
+| Supervisor opens a link while your laptop is on | A tunnel such as Cloudflare Tunnel or ngrok pointing at the local app (your DB stays on your laptop) | No |
+| A link that works any time, without your laptop | Streamlit Community Cloud + a cloud MySQL (this guide) | **Yes** |
+
+The project brief asks for Streamlit Community Cloud, so the rest of this guide covers that route. If you do not need an
+always-available link, the local option is simpler and has nothing to expire.
+
+## 1a. Aiven: "30-day trial" is not the same as the free plan
+
+Aiven has two separate things, and sign-up pages mostly advertise the first:
+
+* **Free trial:** 30 days of credits for *paid* services. It ends after 30 days.
+* **Free tier (what this guide uses):** a small MySQL service with **no time limit and no credit card**.
+  Per Aiven's pricing page (updated 27 Oct 2026) it can be used "indefinitely free of charge" and keeps running after the
+  trial ends. Aiven reserves the right to power it off when idle (with a notice; you can turn it back on), and to change its
+  region or configuration. "No time limit" is therefore not a permanent guarantee.
+
+When you create the service, choose the **Free** plan, not a plan paid with trial credits. If a plan asks you to add a
+payment card, you are on the wrong plan. If Aiven's free plan is not available to you, use the fallback in section 1 or the
+local / tunnel options above. Always keep a local copy of the SQL scripts so you can recreate the database anywhere.
+
 ## 1. Free MySQL hosting: recommendation
 
 **Recommended: Aiven for MySQL, free plan** (real MySQL, no credit card).

@@ -64,3 +64,28 @@ def get_users_config() -> dict:
         except json.JSONDecodeError:
             pass
     return users
+
+
+def _flat(section: str) -> dict:
+    try:
+        return dict(st.secrets[section]) if section in st.secrets else {}
+    except Exception:
+        return {}
+
+
+def get_email_config() -> dict:
+    s = _flat("email")
+    pick = lambda k, e, d=None: (s.get(k) if s.get(k) not in (None, "") else os.getenv(e, d))
+    return {"host": pick("host", "EMAIL_HOST"), "port": int(pick("port", "EMAIL_PORT", 587)),
+            "username": pick("username", "EMAIL_USERNAME"), "password": pick("password", "EMAIL_PASSWORD"),
+            "from_address": pick("from_address", "EMAIL_FROM"),
+            "security": str(pick("security", "EMAIL_SECURITY", "starttls")).lower()}   # starttls | ssl | none
+
+
+def get_base_url() -> str:
+    try:
+        if "app_base_url" in st.secrets:
+            return str(st.secrets["app_base_url"]).rstrip("/")
+    except Exception:
+        pass
+    return os.getenv("APP_BASE_URL", "http://localhost:8501").rstrip("/")

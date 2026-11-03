@@ -5,6 +5,11 @@ import streamlit as st
 
 from app_core import auth, queries as Q, services as S, ui
 
+def _open_iv(row):
+    st.session_state["mi"] = int(row["interview_id"])
+    ui.notify("success", f"{row['candidate_name']}: open the 'Update / feedback' tab.")
+
+
 ui.page_header("Interviews", "Schedule interviews, manage the panel and record feedback")
 ui.show_flash()
 can_edit, is_admin = auth.has_role("recruiter"), auth.has_role("admin")
@@ -40,7 +45,7 @@ with t_list:
         if text:
             df = df[df["candidate_name"].str.contains(text, case=False) | df["job_title"].str.contains(text, case=False)]
         df = df[(df["interview_date"].dt.date >= dfrom) & (df["interview_date"].dt.date <= dto)]
-        ui.show_table(df, "interviews.csv", key="dl_iv")
+        ui.show_table(df, "interviews.csv", key="iv", label_col="candidate_name", actions=[("Open feedback / update", _open_iv)])
 
 with t_sched:
     if not can_edit:
@@ -61,7 +66,7 @@ with t_sched:
                 mode = c4.selectbox("Mode", MODES)
                 emps = Q.employees()
                 panel = st.multiselect("Panel members", [e[0] for e in emps], format_func=dict(emps).get)
-                if st.form_submit_button("Schedule interview", type="primary"):
+                if ui.submit("Schedule interview"):
                     S.call(S.schedule_interview, int(aid), rnd, datetime.combine(d, t), mode, panel)
                     st.rerun()
 
@@ -77,9 +82,12 @@ with t_manage:
         pn, ev = Q.panel(iid), Q.evaluations(iid)
         a, b = st.columns(2)
         a.markdown("**Panel**")
-        a.dataframe(pn, hide_index=True, width="stretch")
+        with a: ui.small_table(pn)
         b.markdown("**Feedback received**")
-        b.dataframe(ev, hide_index=True, width="stretch") if not ev.empty else b.caption("No feedback yet.")
+        if not ev.empty:
+            with b: ui.small_table(ev)
+        else:
+            b.caption("No feedback yet.")
         if can_edit:
             st.divider()
             st.markdown("#### Record feedback")
@@ -90,7 +98,7 @@ with t_manage:
                 rating = c1.slider("Rating (1 = poor, 5 = excellent)", 1, 5, 3)
                 rec = c2.selectbox("Recommendation", ["StrongHire", "Hire", "NoHire", "StrongNoHire"], index=1)
                 com = st.text_area("Comments")
-                if st.form_submit_button("Save feedback", type="primary"):
+                if ui.submit("Save feedback"):
                     S.call(S.record_evaluation, iid, int(who), rating, rec, com)
                     st.rerun()
             st.markdown("#### Reschedule / change the panel")
@@ -102,7 +110,7 @@ with t_manage:
                 emps = Q.employees()
                 panel = st.multiselect("Panel members", [e[0] for e in emps], default=[int(x) for x in pn["employee_id"]],
                                        format_func=dict(emps).get)
-                if st.form_submit_button("Save changes"):
+                if ui.submit("Save changes"):
                     S.call(S.update_interview, iid, datetime.combine(d, t), mode, panel)
                     st.rerun()
         if is_admin:

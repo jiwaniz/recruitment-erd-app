@@ -93,6 +93,7 @@ def options(sql: str) -> list[tuple]:
 
 def clear_cache():
     st.cache_data.clear()
+    st.session_state["_data_time"] = __import__("datetime").datetime.now()
 
 
 @contextmanager

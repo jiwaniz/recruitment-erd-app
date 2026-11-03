@@ -58,46 +58,131 @@ def require_role(min_role: str):
 
 
 def logout():
-    for key in ("user", "login_fails", "locked_until"):
+    for key in ("user", "login_fails", "locked_until", "_forgot"):
         st.session_state.pop(key, None)
     st.rerun()
 
 
-def login_form() -> bool:
-    """Render the login form. Returns True when a user is signed in."""
-    if current_user():
-        return True
-    users = get_users_config()
-    st.markdown("<div class='login-title'>Recruitment Management System</div>", unsafe_allow_html=True)
-    st.caption("Please sign in to continue.")
-    if not users:
-        st.error("No users are configured yet. Add users to `.env` (APP_USERS) or `.streamlit/secrets.toml` "
-                 "([users.*] sections). See README.md, section 'Create the login users'.")
-        return False
-    locked = st.session_state.get("locked_until", 0)
-    if time.time() < locked:
-        st.warning(f"Too many failed attempts. Try again in {int(locked - time.time())} seconds.")
-        return False
+def _config_login(identifier: str, password: str):
+    """Fallback used until the account tables exist: users come from secrets / APP_USERS."""
+    info = get_users_config().get((identifier or "").strip().lower())
+    if info and verify_password(password, info.get("password_hash", "")) and info.get("role") in ROLE_LEVEL:
+        return {"user_id": None, "username": identifier.strip().lower(), "role": info["role"],
+                "display_name": info.get("display_name", identifier), "email": info.get("email"),
+                "employee_id": info.get("employee_id"), "must_change_password": False, "preferences": {},
+                "created_date": None, "last_login": None, "is_active": True}, ""
+    return None, "Invalid username/email or password."
+
+
+def _sign_in_form(db_mode: bool):
     with st.form("login", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        ok = st.form_submit_button("Sign in", type="primary")
-    if ok:
-        info = users.get(username.strip().lower())
-        valid = bool(info) and verify_password(password, info.get("password_hash", ""))
-        if valid and info.get("role") in ROLE_LEVEL:
-            st.session_state["user"] = {
-                "username": username.strip().lower(),
-                "role": info["role"],
-                "display_name": info.get("display_name", username),
-                "employee_id": info.get("employee_id"),
-            }
+        ident = st.text_input("Username or email", placeholder="you@example.com")
+        pw = st.text_input("Password", type="password")       # Streamlit adds a show / hide (eye) button
+        submitted = st.form_submit_button("Sign In", type="primary", width="stretch")
+    if submitted:
+        if not ident.strip() or not pw:
+            st.error("Enter your username (or email) and your password.")
+            return
+        if time.time() < st.session_state.get("locked_until", 0):
+            st.warning(f"Too many failed attempts. Try again in {int(st.session_state['locked_until'] - time.time())} seconds.")
+            return
+        if db_mode:
+            from . import accounts
+            user, error = accounts.login(ident, pw)
+        else:
+            user, error = _config_login(ident, pw)
+        if user:
+            st.session_state["user"] = user
             st.session_state.pop("login_fails", None)
             st.rerun()
         fails = st.session_state.get("login_fails", 0) + 1
         st.session_state["login_fails"] = fails
         if fails >= MAX_FAILS:
-            st.session_state["locked_until"] = time.time() + LOCK_SECONDS
-            st.session_state["login_fails"] = 0
-        st.error("Invalid username or password.")
+            st.session_state.update(locked_until=time.time() + LOCK_SECONDS, login_fails=0)
+        st.error(error)
+    if db_mode:
+        if st.button("Forgot password?", type="tertiary"):
+            st.session_state["_forgot"] = True
+            st.rerun()
+    else:
+        st.caption("Forgot your password? Ask an administrator. Self-service reset needs the account upgrade (see AUTH_SETUP.md).")
+
+
+def _forgot_form():
+    from . import accounts, emailer
+    from .services import ServiceError
+    st.subheader("Forgot password")
+    st.caption("Enter the email address of your account and we will send you a reset link.")
+    if not emailer.is_configured():
+        st.warning("Password reset by email is not set up on this server yet. Please ask an administrator for a temporary password.")
+    with st.form("forgot"):
+        email = st.text_input("Email address")
+        ok = st.form_submit_button("Send reset link", type="primary", width="stretch")
+    if ok and emailer.is_configured():
+        try:
+            st.success(accounts.request_reset(email))
+        except ServiceError as exc:
+            st.error(str(exc))
+    if st.button("Back to sign in", type="tertiary"):
+        st.session_state.pop("_forgot", None)
+        st.rerun()
+
+
+def _reset_form(token: str):
+    from . import accounts
+    from .services import ServiceError
+    st.subheader("Choose a new password")
+    if not accounts.token_user(token):
+        st.error("This reset link is invalid, expired or has already been used.")
+    else:
+        st.caption("At least 10 characters, with at least 3 of: lowercase, uppercase, digit, symbol.")
+        with st.form("reset"):
+            new = st.text_input("New password", type="password")
+            confirm = st.text_input("Confirm new password", type="password")
+            ok = st.form_submit_button("Reset password", type="primary", width="stretch")
+        if ok:
+            try:
+                st.success(accounts.reset_password(token, new, confirm))
+                st.query_params.clear()
+                st.session_state.pop("_forgot", None)
+                return
+            except ServiceError as exc:
+                st.error(str(exc))
+    if st.button("Back to sign in", type="tertiary"):
+        st.query_params.clear()
+        st.rerun()
+
+
+def login_page() -> bool:
+    """Branded login page with Sign In, Forgot Password and Reset Password. Returns True when signed in."""
+    if current_user():
+        return True
+    from . import accounts
+    db_mode = accounts.accounts_enabled()
+    _, mid, _ = st.columns([1, 1.4, 1])
+    with mid:
+        st.markdown("<div class='login-title'>🧑‍💼 Recruitment Management System</div>", unsafe_allow_html=True)
+        st.caption("Sign in to manage vacancies, candidates, interviews and hiring.")
+        token = st.query_params.get("reset_token")
+        if token and db_mode:
+            _reset_form(token)
+        elif db_mode and st.session_state.get("_forgot"):
+            _forgot_form()
+        elif not get_users_config() and not db_mode:
+            st.error("No users are configured yet. See README.md, 'Create the login users'.")
+        else:
+            _sign_in_form(db_mode)
     return False
+
+
+def refresh_session():
+    """Re-read the signed-in user's role/status from the database on every page load (RBAC cannot go stale)."""
+    user = current_user()
+    if user and user.get("user_id"):
+        from . import accounts
+        fresh = accounts.reload_user(user["user_id"])
+        if fresh is None:
+            st.session_state.pop("user", None)
+            st.session_state["_flash"] = ("warning", "Your account was deactivated or removed. Please sign in again.")
+            st.rerun()
+        st.session_state["user"] = fresh

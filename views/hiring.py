@@ -5,6 +5,14 @@ import streamlit as st
 
 from app_core import auth, db, queries as Q, services as S, ui
 
+def _open_offer(row):
+    if row["status"] == "Sent":
+        st.session_state["resp_offer"] = int(row["offer_id"])
+        ui.notify("success", f"{row['candidate_name']}: open the 'Offer response' tab.")
+    else:
+        ui.notify("warning", f"Only offers with status Sent can receive a response (this one is {row['status']}).")
+
+
 ui.page_header("Hiring and Selection", "Offers, approvals, selected candidates and onboarding")
 ui.show_flash()
 can_edit, is_admin = auth.has_role("recruiter"), auth.has_role("admin")
@@ -44,10 +52,10 @@ with t_offers:
     else:
         sf = st.multiselect("Status", ["Draft", "PendingApproval", "Sent", "Accepted", "Declined", "Withdrawn"], key="o_stat")
         df = offers[offers["status"].isin(sf)] if sf else offers
-        ui.show_table(df, "offers.csv", key="dl_offers")
+        ui.show_table(df, "offers.csv", key="offers", label_col="candidate_name", actions=[("Respond to offer", _open_offer)])
         oid = st.selectbox("Show approvals for offer", list(df["offer_id"]), key="o_pick") if not df.empty else None
         if oid:
-            st.dataframe(Q.offer_approvals(int(oid)), hide_index=True, width="stretch")
+            ui.small_table(Q.offer_approvals(int(oid)))
 
 with t_new:
     if not can_edit:
@@ -66,7 +74,7 @@ with t_new:
                 start = c2.date_input("Proposed start date", value=date.today() + timedelta(days=30))
                 approvers = Q.employees(("HRAdmin", "Approver"))
                 chosen = st.multiselect("Approvers", [e[0] for e in approvers], format_func=dict(approvers).get)
-                if st.form_submit_button("Create offer and request approval", type="primary"):
+                if ui.submit("Create offer and request approval"):
                     S.call(S.create_offer, int(aid), sal, start, chosen, None)
                     st.rerun()
 
@@ -76,13 +84,13 @@ with t_appr:
     if pend.empty:
         st.info("No offer approvals are waiting.")
     else:
-        st.dataframe(pend, hide_index=True, width="stretch")
+        ui.small_table(pend)
         if is_admin:
             with st.form("decide_offer"):
                 pm = {int(r.offer_approval_id): f"Offer #{r.offer_id} - approver {r.approver}" for r in pend.itertuples()}
                 xid = st.selectbox("Approval", list(pm), format_func=pm.get)
                 dec = st.radio("Decision", ["Approved", "Rejected"], horizontal=True)
-                if st.form_submit_button("Record decision", type="primary"):
+                if ui.submit("Record decision"):
                     S.call(S.decide_offer_approval, int(xid), dec, None, None)
                     st.rerun()
         else:
@@ -105,7 +113,7 @@ with t_resp:
                 hr = ui.select_pair("HR employee for onboarding (if accepted)", Q.employees(("HRAdmin", "Recruiter")), f"resp_hr_{oid}")
                 reasons = Q.rejection_reasons()
                 reason = ui.select_pair("Reason (if declined / withdrawn)", reasons, f"resp_rs_{oid}", allow_none=True, none_label="- none -")
-                if st.form_submit_button("Record response", type="primary"):
+                if ui.submit("Record response"):
                     S.call(S.respond_offer, oid, resp, None, join, hr, reason)
                     st.rerun()
 
@@ -124,6 +132,6 @@ with t_onb:
                 stt = c1.selectbox("Status", ["Pending", "DocumentsSubmitted", "Completed"])
                 jd = c2.date_input("Joining date", value=date.today() + timedelta(days=14))
                 hr = ui.select_pair("Assigned HR", Q.employees(("HRAdmin", "Recruiter")), "onb_hr")
-                if st.form_submit_button("Update onboarding"):
+                if ui.submit("Update onboarding"):
                     S.call(S.update_onboarding, int(oid), stt, jd, hr)
                     st.rerun()

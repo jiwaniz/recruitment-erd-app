@@ -4,6 +4,16 @@ import streamlit as st
 
 from app_core import auth, queries as Q, services as S, ui
 
+def _open_profile(row):
+    st.session_state["prof_c"] = int(row["candidate_id"])
+    ui.notify("success", f"{row['candidate_name']}: open the 'Profile' tab to see the full profile.")
+
+
+def _open_edit(row):
+    st.session_state["edit_c"] = int(row["candidate_id"])
+    ui.notify("success", f"{row['candidate_name']}: open the 'Edit / manage' tab to change the record.")
+
+
 ui.page_header("Candidates", "Search, view and maintain candidate records")
 ui.show_flash()
 can_edit, is_admin = auth.has_role("recruiter"), auth.has_role("admin")
@@ -30,7 +40,8 @@ with t_browse:
         for s in skill_f:
             df = df[df["skills"].fillna("").str.contains(s, regex=False)]
         df = df[df["applications"] >= min_apps]
-        ui.show_table(df, "candidates.csv", key="dl_cand")
+        ui.show_table(df, "candidates.csv", key="cand", label_col="candidate_name",
+                       actions=[("View profile", _open_profile), ("Edit candidate", _open_edit)])
 
 with t_profile:
     if cands.empty:
@@ -41,19 +52,31 @@ with t_profile:
         prof = Q.candidate_profile(int(cid))
         b = prof["base"].iloc[0]
         st.subheader(b["candidate_name"])
-        ui.metrics([("Email", b["candidate_email"]), ("Contact", b["candidate_contact_no"] or "-"),
+        ui.metrics([("Email", b["candidate_email"]), ("Contact", ui.val(b["candidate_contact_no"], "-")),
                     ("Applications", len(prof["applications"])), ("Resumes", len(prof["resumes"]))], cols=4)
         a, c = st.columns(2)
         with a:
             st.markdown("**Skills and qualifications**")
-            st.dataframe(prof["skills"], hide_index=True, width="stretch") if not prof["skills"].empty else st.caption("No skills recorded.")
+            if not prof["skills"].empty:
+                ui.small_table(prof["skills"])
+            else:
+                st.caption("No skills recorded.")
             st.markdown("**Resumes**")
-            st.dataframe(prof["resumes"], hide_index=True, width="stretch") if not prof["resumes"].empty else st.caption("No resumes recorded.")
+            if not prof["resumes"].empty:
+                ui.small_table(prof["resumes"])
+            else:
+                st.caption("No resumes recorded.")
         with c:
             st.markdown("**Application history**")
-            st.dataframe(prof["applications"], hide_index=True, width="stretch") if not prof["applications"].empty else st.caption("This candidate has not applied yet.")
+            if not prof["applications"].empty:
+                ui.small_table(prof["applications"])
+            else:
+                st.caption("This candidate has not applied yet.")
             st.markdown("**Referrals**")
-            st.dataframe(prof["referrals"], hide_index=True, width="stretch") if not prof["referrals"].empty else st.caption("No referrals.")
+            if not prof["referrals"].empty:
+                ui.small_table(prof["referrals"])
+            else:
+                st.caption("No referrals.")
 
 with t_add:
     if not can_edit:
@@ -68,7 +91,7 @@ with t_add:
             resume = c2.text_input("Resume file path (optional)", placeholder="resumes/2026/10/name_cv_v1.pdf")
             chosen = st.multiselect("Skills", [n for _, n in skills])
             level = st.selectbox("Default proficiency for the selected skills", LEVELS, index=1)
-            if st.form_submit_button("Add candidate", type="primary"):
+            if ui.submit("Add candidate"):
                 ids = {n: i for i, n in skills}
                 S.call(S.create_candidate, name, email, phone, {ids[n]: level for n in chosen}, resume)
                 st.rerun()
@@ -86,8 +109,8 @@ with t_edit:
         with st.form(f"edit_cand_{cid}"):
             name = st.text_input("Full name", value=row["candidate_name"])
             email = st.text_input("Email", value=row["candidate_email"])
-            phone = st.text_input("Contact number", value=row["candidate_contact_no"] or "")
-            if st.form_submit_button("Save details", type="primary"):
+            phone = st.text_input("Contact number", value=ui.val(row["candidate_contact_no"]))
+            if ui.submit("Save details"):
                 S.call(S.update_candidate, cid, name, email, phone)
                 st.rerun()
 
@@ -110,7 +133,7 @@ with t_edit:
             path = st.text_input("File path")
             d = st.date_input("Upload date", value=date.today())
             prim = st.checkbox("Make this the primary resume", value=True)
-            if st.form_submit_button("Add resume"):
+            if ui.submit("Add resume"):
                 S.call(S.add_resume, cid, path, d, prim)
                 st.rerun()
 
@@ -118,7 +141,7 @@ with t_edit:
         with st.form(f"ref_{cid}"):
             emp = ui.select_pair("Referred by (employee)", Q.employees(), f"ref_emp_{cid}")
             d = st.date_input("Referral date", value=date.today(), key=f"ref_d_{cid}")
-            if st.form_submit_button("Save referral"):
+            if ui.submit("Save referral"):
                 S.call(S.add_referral, cid, emp, d)
                 st.rerun()
 

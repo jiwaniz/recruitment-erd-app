@@ -22,9 +22,10 @@ if erd.exists():
     st.image(str(erd), caption="29 tables. Every foreign key has the same name as the primary key it references.")
 
 st.subheader("Tables and row counts")
-tables = db.q("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name")
-rows = [{"table": t, "rows": int(db.scalar(f"SELECT COUNT(*) FROM `{t}`"))} for t in tables["table_name"]]
-st.dataframe(rows, hide_index=True, width="stretch")
+# MySQL 8 returns information_schema column names in capitals, so we alias and read by position
+tables = db.q("SELECT table_name AS tname FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name")
+rows = [{"table": t, "rows": int(db.scalar(f"SELECT COUNT(*) FROM `{t}`"))} for t in tables.iloc[:, 0]]
+ui.small_table(rows)
 
 st.subheader("Roles")
 st.markdown("""

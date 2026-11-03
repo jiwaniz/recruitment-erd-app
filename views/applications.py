@@ -6,6 +6,11 @@ import streamlit as st
 
 from app_core import auth, db, queries as Q, services as S, ui
 
+def _open_app(row):
+    st.session_state["man_app"] = int(row["application_id"])
+    ui.notify("success", f"{row['candidate_name']}: open the 'Manage an application' tab.")
+
+
 ui.page_header("Applications", "Link candidates to vacancies and track every application through the pipeline")
 ui.show_flash()
 can_edit = auth.has_role("recruiter")
@@ -52,7 +57,7 @@ with t_all:
             df = df[df["source_name"].isin(src)]
         d = pd.to_datetime(df["date_applied"]).dt.date
         df = df[(d >= dfrom) & (d <= dto)]
-        ui.show_table(df, "applications.csv", key="dl_apps")
+        ui.show_table(df, "applications.csv", key="apps", label_col="candidate_name", actions=[("Manage application", _open_app)])
 
 with t_new:
     if not can_edit:
@@ -69,7 +74,7 @@ with t_new:
                 pid = st.selectbox("Job posting", list(pm), format_func=pm.get)
                 when = st.date_input("Date applied", value=date.today())
                 by = ui.select_pair("Recorded by", Q.employees(("Recruiter", "HRAdmin")), "na_by", allow_none=True, none_label="- system / me -")
-                if st.form_submit_button("Create application", type="primary"):
+                if ui.submit("Create application"):
                     S.call(S.create_application, cand, int(pid), when, by)
                     st.rerun()
 
@@ -86,17 +91,26 @@ with t_manage:
         h1, h2 = st.columns(2)
         with h1:
             st.markdown("**Status history**")
-            st.dataframe(Q.status_history(aid), hide_index=True, width="stretch")
+            ui.small_table(Q.status_history(aid))
             st.markdown("**Screening**")
             sc = Q.app_screenings(aid)
-            st.dataframe(sc, hide_index=True, width="stretch") if not sc.empty else st.caption("No screening recorded.")
+            if not sc.empty:
+                ui.small_table(sc)
+            else:
+                st.caption("No screening recorded.")
         with h2:
             st.markdown("**Assessments**")
             asd = Q.app_assessments(aid)
-            st.dataframe(asd, hide_index=True, width="stretch") if not asd.empty else st.caption("No assessments recorded.")
+            if not asd.empty:
+                ui.small_table(asd)
+            else:
+                st.caption("No assessments recorded.")
             st.markdown("**Background checks**")
             bg = Q.app_background(aid)
-            st.dataframe(bg, hide_index=True, width="stretch") if not bg.empty else st.caption("No background checks recorded.")
+            if not bg.empty:
+                ui.small_table(bg)
+            else:
+                st.caption("No background checks recorded.")
 
         if can_edit:
             st.divider()
@@ -113,7 +127,7 @@ with t_manage:
                     new = st.selectbox("New status", nexts)
                     reason = ui.select_pair("Reason (required for Rejected / Withdrawn)", reasons, f"rs_{aid}", allow_none=True, none_label="- none -")
                     by = ui.select_pair("Changed by", hr, f"by_{aid}", allow_none=True, none_label="- me -")
-                    if st.form_submit_button("Update status", type="primary"):
+                    if ui.submit("Update status"):
                         S.call(S.change_status, aid, new, by, reason)
                         st.rerun()
             if status in ("Applied", "Screening"):
@@ -124,7 +138,7 @@ with t_manage:
                     score = st.slider("Score", 0, 100, 60)
                     reason = ui.select_pair("Rejection reason (if rejected)", [r for r in reasons if str(r[1]).startswith("Screening")], f"scr_rs_{aid}", allow_none=True, none_label="- none -")
                     notes = st.text_area("Notes")
-                    if st.form_submit_button("Save screening"):
+                    if ui.submit("Save screening"):
                         S.call(S.add_screening, aid, rv, out, score, notes, reason)
                         st.rerun()
             if status in ("Interviewing", "Assessment"):
@@ -134,7 +148,7 @@ with t_manage:
                     score = st.slider("Score", 0, 100, 60, key=f"asm_s_{aid}")
                     when = st.date_input("Date", value=date.today(), key=f"asm_d_{aid}")
                     remarks = st.text_input("Remarks", key=f"asm_r_{aid}")
-                    if st.form_submit_button("Save assessment"):
+                    if ui.submit("Save assessment"):
                         S.call(S.add_assessment, aid, typ, score, remarks, when)
                         st.rerun()
             if status in ("Assessment", "BackgroundCheck"):
@@ -146,6 +160,6 @@ with t_manage:
                     stt = c2.selectbox("Status", ["Pending", "InProgress", "Completed"], key=f"bg_s_{aid}")
                     res = c3.selectbox("Result (if completed)", ["Clear", "Flagged", "Failed"], key=f"bg_r_{aid}")
                     comp = st.date_input("Completion date (if completed)", value=date.today(), key=f"bg_c_{aid}")
-                    if st.form_submit_button("Save background check"):
+                    if ui.submit("Save background check"):
                         S.call(S.add_background_check, aid, prov, ini, comp if stt == "Completed" else None, stt, res)
                         st.rerun()

@@ -39,18 +39,30 @@ class ServiceError(Exception):
 
 
 def call(fn, *args, **kwargs) -> bool:
-    """Run a service function and turn any problem into a friendly message. Returns True on success."""
+    """Run a service function and turn any problem into a friendly message. Returns True on success.
+    Shows a spinner while saving and ignores an identical request repeated within 3 seconds (double-click protection)."""
+    import time
+    sig = (fn.__name__, repr(args), repr(sorted(kwargs.items())))
+    last = st.session_state.get("_last_call")
+    if last and last[0] == sig and time.time() - last[1] < 3:
+        notify("warning", "That action was just submitted. Duplicate submission ignored.")
+        return False
+    st.session_state["_last_call"] = (sig, time.time())
     try:
-        message = fn(*args, **kwargs)
+        with st.spinner("Saving..."):
+            message = fn(*args, **kwargs)
         notify("success", message or "Saved.")
         return True
     except (ServiceError, PermissionError) as exc:
         notify("error", str(exc))
+        st.session_state.pop("_last_call", None)        # a failed attempt may be corrected and retried at once
     except IntegrityError as exc:
-        notify("error", f"The database rejected this change (a rule or relationship would be broken): "
-                        f"{str(exc.orig)[:200]}")
+        notify("error", "The database rejected this change because it would break a rule or relationship. "
+                        f"Details: {str(exc.orig)[:160]}")
+        st.session_state.pop("_last_call", None)
     except OperationalError as exc:
         notify("error", f"Database connection problem. Please try again. ({str(exc.orig)[:120]})")
+        st.session_state.pop("_last_call", None)
     return False
 
 
