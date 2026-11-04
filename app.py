@@ -131,17 +131,3 @@ except Exception as exc:                                   # noqa: BLE001
     if auth.has_role("admin"):
         with st.expander("Technical details (administrators only)"):
             st.code(f"{type(exc).__name__}: {str(exc)[:300]}")
-
-import streamlit as st
-
-# 1. Your existing app layout, sidebar, and widgets
-st.title("My Recruitment ERD App")
-# ... all your other code goes here ...
-
-# 2. Add the database connection test at the end
-conn = st.connection("sql", type="sql")
-
-# Run a quick test query to view your data
-df = conn.query("SHOW TABLES;", ttl=0)
-st.write("### Database Tables:")
-st.dataframe(df)
