@@ -26,8 +26,37 @@ def _secrets_section(name: str) -> dict:
     return {}
 
 
+def _db_secrets() -> tuple[dict, str]:
+    """Find the database settings in Streamlit secrets. Accepts [mysql] (preferred) and also the [connections.<name>] layout
+    used by Streamlit's own SQL connections, with the key names host/port/name|database/user|username/password or a single url."""
+    try:
+        if "mysql" in st.secrets:
+            return dict(st.secrets["mysql"]), "mysql"
+        if "connections" in st.secrets:
+            conns = st.secrets["connections"]
+            if "mysql" in conns:
+                return dict(conns["mysql"]), "connections.mysql"
+            for name in conns:
+                v = conns[name]
+                if hasattr(v, "get") and (v.get("host") or v.get("url")):
+                    return dict(v), f"connections.{name}"
+            if conns.get("host") or conns.get("url"):
+                return dict(conns), "connections"
+    except Exception:
+        pass
+    return {}, ""
+
+
 def get_db_config() -> dict:
-    s = _secrets_section("mysql")
+    s, _ = _db_secrets()
+    if s.get("url"):                                       # mysql+pymysql://user:password@host:port/database
+        try:
+            from sqlalchemy.engine import make_url
+            u = make_url(str(s["url"]))
+            s = {**s, "host": u.host, "port": u.port, "name": u.database, "user": u.username, "password": u.password}
+        except Exception:
+            pass
+    s = {**s, "name": s.get("name") or s.get("database"), "user": s.get("user") or s.get("username")}
 
     def pick(skey, ekey, default=None):
         val = s.get(skey)
@@ -93,18 +122,18 @@ def get_base_url() -> str:
 
 def diagnostics() -> list[tuple[str, str]]:
     """What the app can see, for the 'cannot reach the database' page. Never includes passwords or the certificate text."""
-    cfg, sec = get_db_config(), _secrets_section("mysql")
+    cfg = get_db_config()
+    sec, where = _db_secrets()
     try:
         sections = ", ".join(str(k) for k in st.secrets.keys()) or "(none)"
-    except Exception:                                      # no secrets file / box is empty or unreadable
+    except Exception:
         sections = "(none found - the Secrets box is empty, not saved, or not valid TOML)"
-    src = lambda key, env: "Streamlit secrets" if sec.get(key) not in (None, "") else ("environment / .env" if os.getenv(env) else "built-in default")
     ca = cfg["ssl_ca"]
     return [("Secret sections found", sections),
-            ("host", f"{cfg['host']}   [{src('host', 'DB_HOST')}]"),
-            ("port", f"{cfg['port']}   [{src('port', 'DB_PORT')}]"),
-            ("database name", f"{cfg['name']}   [{src('name', 'DB_NAME')}]"),
-            ("user", f"{cfg['user'] or '(not set)'}   [{src('user', 'DB_USER')}]"),
+            ("Database settings read from", where or "NOT FOUND (expected a [mysql] section)"),
+            ("Keys in that section (names only)", ", ".join(sorted(map(str, sec))) or "-"),
+            ("host", str(cfg["host"])), ("port", str(cfg["port"])), ("database name", str(cfg["name"])),
+            ("user", cfg["user"] or "(not set)"),
             ("password", f"set ({len(cfg['password'])} characters)" if cfg["password"] else "NOT SET"),
             ("TLS certificate", f"set ({str(ca).count(chr(10)) + 1} lines)" if ca else "not set"),
             ("login users configured", str(len(get_users_config())))]
