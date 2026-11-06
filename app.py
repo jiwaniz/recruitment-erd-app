@@ -10,6 +10,7 @@ st.set_page_config(page_title="Recruitment Management System", page_icon="ðŸ§‘â€
                    initial_sidebar_state="expanded")
 
 from app_core import auth, db, queries as Q, ui   # noqa: E402
+from app_core.config import diagnostics   # noqa: E402
 
 ui.inject_css()
 
@@ -24,6 +25,8 @@ if not ok:
     st.error("The application cannot reach its database right now.")
     st.info("Please check that MySQL is running and that the credentials in `.env` (local) or Streamlit Secrets (cloud) are correct. "
             "Free cloud databases such as Aiven may need to be powered on again after inactivity.")
+    with st.expander("Connection settings this app can see (no passwords shown)", expanded=True):
+        st.table([{"Setting": a, "Value": b} for a, b in diagnostics()])
     with st.expander("Technical details"):
         st.code(message)
     if st.button("Try again"):

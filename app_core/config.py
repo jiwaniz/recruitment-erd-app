@@ -89,3 +89,22 @@ def get_base_url() -> str:
     except Exception:
         pass
     return os.getenv("APP_BASE_URL", "http://localhost:8501").rstrip("/")
+
+
+def diagnostics() -> list[tuple[str, str]]:
+    """What the app can see, for the 'cannot reach the database' page. Never includes passwords or the certificate text."""
+    cfg, sec = get_db_config(), _secrets_section("mysql")
+    try:
+        sections = ", ".join(str(k) for k in st.secrets.keys()) or "(none)"
+    except Exception:                                      # no secrets file / box is empty or unreadable
+        sections = "(none found - the Secrets box is empty, not saved, or not valid TOML)"
+    src = lambda key, env: "Streamlit secrets" if sec.get(key) not in (None, "") else ("environment / .env" if os.getenv(env) else "built-in default")
+    ca = cfg["ssl_ca"]
+    return [("Secret sections found", sections),
+            ("host", f"{cfg['host']}   [{src('host', 'DB_HOST')}]"),
+            ("port", f"{cfg['port']}   [{src('port', 'DB_PORT')}]"),
+            ("database name", f"{cfg['name']}   [{src('name', 'DB_NAME')}]"),
+            ("user", f"{cfg['user'] or '(not set)'}   [{src('user', 'DB_USER')}]"),
+            ("password", f"set ({len(cfg['password'])} characters)" if cfg["password"] else "NOT SET"),
+            ("TLS certificate", f"set ({str(ca).count(chr(10)) + 1} lines)" if ca else "not set"),
+            ("login users configured", str(len(get_users_config())))]
